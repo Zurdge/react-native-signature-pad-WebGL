@@ -28,6 +28,7 @@ export interface Options {
   minDistance?: number;
   backgroundColor?: string;
   penColor?: string;
+  errorRate?:any;
   throttle?: number;
   velocityFilterWeight?: number;
   onBegin?: (event: MouseEvent | Touch) => void;
@@ -47,8 +48,10 @@ export default class SignaturePad {
   public minWidth: number;
   public maxWidth: number;
   public minDistance: number;
+  public averageSize:Array<number> = [0];
   public backgroundColor: string;
   public penColor: string;
+  public errorRate:any;
   public throttle: number;
   public velocityFilterWeight: number;
   public onBegin?: (event: MouseEvent | Touch) => void;
@@ -89,6 +92,7 @@ export default class SignaturePad {
         return (this.minWidth + this.maxWidth) / 2;
       };
     this.penColor = options.penColor || 'black';
+    this.errorRate = options.errorRate || 0;
     this.backgroundColor = options.backgroundColor || 'white';
     this.onBegin = options.onBegin;
     this.onEnd = options.onEnd;
@@ -98,6 +102,7 @@ export default class SignaturePad {
 
     this.clear();
 
+
     // Enable mouse and touch event handlers
     //this.on();
   }
@@ -106,8 +111,7 @@ export default class SignaturePad {
     const { _ctx: ctx, canvas } = this;
 
     // Clear canvas using background color
-    console.log(this.backgroundColor)
-    ctx.fillStyle = this.backgroundColor;
+    ctx.fillStyle = 'white';
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -272,35 +276,44 @@ export default class SignaturePad {
     this._strokeUpdate(event);
   }
 
+  public lerp = (start:any, end:any, amt:any)=>{
+    return (1-amt)*start+amt*end
+  }
   private _strokeUpdate(event:any): void {
-    const x = event.x;
-    const y = event.y;
+    try{
 
-    const point = this._createPoint(x, y);
-    const lastPointGroup = this._data[this._data.length - 1];
-    const lastPoints = lastPointGroup.points;
-    const lastPoint =
-      lastPoints.length > 0 && lastPoints[lastPoints.length - 1];
-    const isLastPointTooClose = lastPoint
-      ? point.distanceTo(lastPoint) <= this.minDistance
-      : false;
-    const color = lastPointGroup.color;
+      //this.errorRate.current < 0.5 ? 'black':'red',
+      const x = event.x;
+      const y = event.y;
 
-    // Skip this point if it's too close to the previous one
-    if (!lastPoint || !(lastPoint && isLastPointTooClose)) {
-      const curve = this._addPoint(point);
+      const point = this._createPoint(x, y);
+      const lastPointGroup = this._data[this._data.length - 1];
+      const lastPoints = lastPointGroup.points;
+      const lastPoint =
+        lastPoints.length > 0 && lastPoints[lastPoints.length - 1];
+      const isLastPointTooClose = lastPoint
+        ? point.distanceTo(lastPoint) <= this.minDistance
+        : false;
+      const color = lastPointGroup.color;
 
-      if (!lastPoint) {
-        this._drawDot({ color, point });
-      } else if (curve) {
-        this._drawCurve({ color, curve });
+      // Skip this point if it's too close to the previous one
+      if (!lastPoint || !(lastPoint && isLastPointTooClose)) {
+        const curve = this._addPoint(point);
+
+        if (!lastPoint) {
+          this._drawDot({ color, point });
+        } else if (curve) {
+          this._drawCurve({ color, curve });
+        }
+
+        lastPoints.push({
+          time: point.time,
+          x: point.x,
+          y: point.y,
+        });
       }
+    }catch(error){
 
-      lastPoints.push({
-        time: point.time,
-        x: point.x,
-        y: point.y,
-      });
     }
   }
 
@@ -340,6 +353,7 @@ export default class SignaturePad {
     this._lastVelocity = 0;
     this._lastWidth = (this.minWidth + this.maxWidth) / 2;
     this._ctx.fillStyle = this.penColor;
+    this._ctx.flush()
   }
 
   private _createPoint(x: number, y: number): Point {
@@ -396,13 +410,19 @@ export default class SignaturePad {
 
     return widths;
   }
-
+  private getAverageWidth(inputWidth:number){
+    this.averageSize.push(inputWidth)
+    if(this.averageSize.length > 10) this.averageSize.shift();
+    return this.averageSize.reduce((a, b) => a + b, 0)/this.averageSize.length
+  }
   private _strokeWidth(velocity: number): number {
     return Math.max(this.maxWidth / (velocity + 1), this.minWidth);
   }
 
   private _drawCurveSegment(x: number, y: number, width: number): void {
     const ctx = this._ctx;
+
+    width = this.getAverageWidth(width);
 
     ctx.moveTo(
       this._ctx.width*(x/this.screenDimensions.width),
@@ -417,6 +437,9 @@ export default class SignaturePad {
     this._isEmpty = false;
   }
 
+  lastErrorRate = 0;
+  r = 0;
+
   private _drawCurve({ color, curve }: { color: string; curve: Bezier }): void {
     const ctx = this._ctx;
     const widthDelta = curve.endWidth - curve.startWidth;
@@ -425,7 +448,18 @@ export default class SignaturePad {
     const drawSteps = Math.floor(curve.length()) * 1;
 
     ctx.beginPath();
-    ctx.fillStyle = color;
+    //ctx.fillStyle = color;
+
+    // Set the pen color based on teh 'Correctness' of the guide
+    if(this.errorRate.current != this.lastErrorRate){
+      this.lastErrorRate = this.errorRate.current;
+      this.r = this.lerp(
+        0,255,
+        this.errorRate.current
+      );
+    }
+    ctx.fillStyle = `rgb(${this.r},0,0`;
+
 
     for (let i = 0; i < drawSteps; i += 2) {
       // Calculate the Bezier (x, y) coordinate for this step.
